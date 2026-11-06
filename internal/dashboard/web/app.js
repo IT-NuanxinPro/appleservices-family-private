@@ -2,6 +2,7 @@
 const $=id=>document.getElementById(id), token=document.querySelector('meta[name="app-token"]').content;
 let loginMode='reconnect',loginAccount='',current=null,busy=false,privateCode='',privateCodeKind='',hideAt=0,lastState='',lastQuery='',lastRefresh='',lastRequest='',noticeTimer,selectedAccount=localStorage.getItem('selected-account')||'',familyInfo=null,familyAccount='',familyCheckedAt='',familyStale=false,storageAccount='',storageCheckedAt='',planAccount='',planCheckedAt='',poolOrganizerAccount=localStorage.getItem('family-organizer-account')||'',poolOrganizerName=localStorage.getItem('family-organizer-name')||'',purchaseAction='',purchaseLabel='',hmeInfo=null,hmeAccount='',hmeCandidate='',hmeFilter='active',hmeVisible=100,hmeEditing='',activationInfo=null,activationAccount='',autoRefreshScheduled=false;
 let familyRoster=null,familyRosterMessage='点击“读取家庭成员”以读取组织者当前的 Apple 成员名单。',familyRosterRequest=0;
+let familyAddContext=null;
 const autoRefreshState=new Map();
 const autoRefreshOwner=(globalThis.crypto?.randomUUID?.()||Math.random().toString(36).slice(2));
 function autoRefreshLeaseKey(account){return 'appleservices:auto-refresh:'+account;}
@@ -71,6 +72,53 @@ function renderActivation(view){
     $('activationSummary').textContent=view.status.icloud_issue?'已保存的 iCloud 会话暂未通过在线检查。账号验证仍保留，可稍后重试连接，无需再次输入短信验证码。':activated?'激活记录已保存，后台正在验证并继续完成本次登录。':terms?'请查看并确认 Apple 当前条款。激活完成后，后台会继续本次登录，无需再次输入密码或短信验证码。':'短信或设备验证码已验证，后台仍在运行。请检查激活状态并完成 Apple 要求的步骤，完成后会自动继续登录；连接暂时失败时也可以重试。';
   }
 }
+function clearFamilyPassword(){
+  familyAddContext=null;
+  $('familyPassword').value='';
+  $('familyPasswordAccount').value='';
+  $('familyPasswordOrganizer').textContent='';
+}
+function familyAddSelectionMatches(selection){
+  return !!selection&&selectedAccount===selection.account&&current?.login_account===selection.appleID&&$('familyOrganizer').value===selection.organizer;
+}
+async function requestFamilyAdd(){
+  if(busy)return;
+  const selection={account:selectedAccount,appleID:current?.login_account||'',organizer:$('familyOrganizer').value,label:$('familyOrganizer').selectedOptions[0]?.textContent||''};
+  if(!selection.account||!selection.organizer)return;
+  if(!confirm('将当前账号加入 '+selection.label+' 的家庭，并在可用时启用共享 iCloud+？购买共享和位置共享保持关闭。'))return;
+  let ready;
+  busy=true;if(current)render(current);
+  try{
+    ready=await api('action',{action:'family-add-readiness'});
+  }catch{
+    notice('未能检查家庭操作条件，请稍后重试。',true);
+    return;
+  }finally{busy=false;if(current)render(current);}
+  if(!familyAddSelectionMatches(selection))return;
+  if(ready.ok){await action('family-add-self',{code:selection.organizer});return;}
+  if(ready.stage!=='family-credential-required'){notice(ready.message||'目标账号后台尚未就绪',true);return;}
+  if(!selection.appleID){notice('当前账号信息不完整，请刷新页面后重试。',true);return;}
+  clearFamilyPassword();
+  familyAddContext=selection;
+  $('familyPasswordAccount').value=selection.appleID;
+  $('familyPasswordOrganizer').textContent='加入母号：'+selection.label;
+  $('familyPasswordDialog').showModal();
+  $('familyPassword').focus();
+}
+async function submitFamilyPassword(event){
+  event.preventDefault();
+  if(busy)return;
+  const selection=familyAddContext;
+  const payload={code:selection?.organizer||'',target_apple_id:selection?.appleID||'',target_password:$('familyPassword').value};
+  $('familyPassword').value='';
+  $('familyPasswordDialog').close();
+  clearFamilyPassword();
+  try{
+    if(!familyAddSelectionMatches(selection)){notice('当前账号或母号已变化，请重新选择后再操作。',true);return;}
+    if(!payload.target_password.trim()){notice('请输入当前子号密码。',true);return;}
+    await action('family-add-self',payload);
+  }finally{payload.target_password='';payload.target_apple_id='';}
+}
 function renderLoginContinuation(status){
   if(!status?.running||status.authenticated||status.state!=='awaiting_icloud_activation')return;
   $('sessionTitle').textContent='账号验证已通过 · 等待 iCloud';
@@ -122,6 +170,7 @@ function scheduleAutoRefresh(view,activated){
   window.setTimeout(()=>{autoRefreshScheduled=false;if(account!==selectedAccount||busy){autoRefreshState.delete(key);clearAutoRefreshAttempt(key);releaseAutoRefreshLease(account);return;}renewAutoRefreshLease(account);action(target.action,{}, {silent:true,automatic:true,autoKey:key});},80);
 }
 function render(view){const previousSelected=selectedAccount;current=view;selectedAccount=view.selected||selectedAccount;if(previousSelected!==selectedAccount)invalidateFamilyRoster('当前组织者已切换，请读取新组织者的家庭成员名单。');
+if(familyAddContext&&selectedAccount!==familyAddContext.account){$('familyPasswordDialog').close();clearFamilyPassword();}
 if(view.accounts)renderAccounts(view);if(view.family){const changed=familyAccount!==selectedAccount||!familyInfo||familyCheckedAt!==view.family_checked_at;if(changed)renderFamily(view.family,{checkedAt:view.family_checked_at,stale:view.family_stale,animate:false});else updateFamilyCacheMeta(view.family_checked_at,view.family_stale,true);}else if(familyAccount===selectedAccount&&familyInfo)renderFamily(null);if(view.storage){if(storageAccount!==selectedAccount||storageCheckedAt!==view.storage_checked_at)renderStorage(view.storage,{checkedAt:view.storage_checked_at,stale:view.storage_stale});}else if(storageAccount===selectedAccount&&storageCheckedAt)renderStorage(null);if(view.storage_plan){if(planAccount!==selectedAccount||planCheckedAt!==view.storage_plan_checked_at)renderPlans(view.storage_plan,{checkedAt:view.storage_plan_checked_at,stale:view.storage_plan_stale});}else if(planAccount===selectedAccount&&planCheckedAt)renderPlans(null);renderActivation(view);const status=view.status||{},online=status.running&&status.authenticated,activated=!!view.icloud_activated,waiting=status.verification_required,running=status.running||view.launching,starting=running&&!online&&!waiting;
 const titles={initializing:'正在初始化本机身份',signing_in:'正在登录 Apple 账户',starting:'正在建立后台连接',refresh_failed:'登录刷新暂未完成',verification_required:'需要重新验证账户',awaiting_sms:'完成短信验证',awaiting_existing_sms:'输入已有短信验证码',awaiting_device_code:'输入设备验证码',awaiting_account_validation:'验证 Apple 账户',awaiting_pairing:'等待设备配对',awaiting_pairing_code:'输入设备配对码',verifying_pairing:'正在验证设备配对'};
 $('sessionTitle').textContent=online?(status.push_issue==='reconnecting'?'登录正常 · 推送重连中':status.state==='refresh_failed'?'已登录 · 续期暂未完成':'登录持续在线'):(titles[status.state]||(status.state==='failed'&&!activated?'后台异常停止':starting?'正在连接 Apple':waiting?'需要短信验证':activated?'iCloud 已激活':'连接你的 Apple 账户'));
@@ -212,8 +261,10 @@ async function action(name,extra={},options={}){
   }
   busy=true;document.body.classList.add('busy');if(familyAction)$('familyCard').classList.add('is-loading');if(hmeAction)$('hmeCard').classList.add('is-loading');if(current)render(current);
   try{
-    const result=await api('action',{action:name,...extra});
-    if(hmeAction&&selectedAccount!==actionAccount){setHMEFeedback('');return;}
+    let result;
+    try{result=await api('action',{action:name,...extra});}
+    finally{if(name==='family-add-self'){extra.target_password='';extra.target_apple_id='';}}
+    if((familyAction||hmeAction)&&selectedAccount!==actionAccount){if(hmeAction)setHMEFeedback('');return;}
     if(result.family){const checkedAt=new Date().toISOString();if(current){current.family=result.family;current.family_checked_at=checkedAt;current.family_stale=false;}renderFamily(result.family,{checkedAt,stale:false});}
     if(!result.ok){
       const detail=(result.stage?' · '+result.stage:'')+(result.http_status?' · HTTP '+result.http_status:'')+(result.apple_hint?' · '+result.apple_hint:'');
@@ -289,7 +340,11 @@ $('planButton').addEventListener('click',()=>action('storage-plan'));
 $('familyRefreshButton').addEventListener('click',()=>action('family-info'));
 $('familyOrganizer').addEventListener('change',()=>{if(current)render(current);});
 $('familyRemoveMember').addEventListener('change',()=>{if(current)render(current);});
-$('familyAddButton').addEventListener('click',()=>{const organizer=$('familyOrganizer').value;if(!organizer)return;const label=$('familyOrganizer').selectedOptions[0]?.textContent||organizer;if(!confirm('将当前账号加入 '+label+' 的家庭，并在可用时启用共享 iCloud+？购买共享和位置共享保持关闭。'))return;action('family-add-self',{code:organizer});});
+$('familyAddButton').addEventListener('click',requestFamilyAdd);
+$('familyPasswordForm').addEventListener('submit',submitFamilyPassword);
+$('closeFamilyPassword').addEventListener('click',()=>{$('familyPasswordDialog').close();clearFamilyPassword();});
+$('familyPasswordDialog').addEventListener('close',clearFamilyPassword);
+$('familyPasswordDialog').addEventListener('cancel',clearFamilyPassword);
 $('familyJoinStorageButton').addEventListener('click',()=>action('family-join-storage'));
 $('familyRosterButton').addEventListener('click',readFamilyRoster);$('familyRemoveButton').addEventListener('click',removeFamilyRosterMember);
 $('hmeListButton').addEventListener('click',()=>action('hme-list'));

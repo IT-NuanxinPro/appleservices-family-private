@@ -53,15 +53,16 @@ type Server struct {
 	registryNote string
 	// provisionMacPush is replaceable only by package tests. Production uses
 	// the pinned native Mac APS bootstrap configured by cmd/dashboard.
-	provisionMacPush     func(context.Context, string) error
-	familyPoolProjector  func(context.Context, string, string, string) (*control.FamilyPoolProjection, error)
-	familyRosterKey      string
-	familyRosterReader   familyRosterReaderFunc
-	familyRefRemover     familyRefRemoverFunc
-	familyPoolRemover    func(context.Context, *Account, *Account) (*control.FamilyInfo, *control.FamilyInfo, error)
-	familyRemovalMu      sync.Mutex
-	familyRemovalUnknown map[string]bool
-	primaryMailRunner    func(context.Context, *Account, primaryMailInput) primaryMailState
+	provisionMacPush       func(context.Context, string) error
+	familyPoolProjector    func(context.Context, string, string, string) (*control.FamilyPoolProjection, error)
+	familyRosterKey        string
+	familyRosterReader     familyRosterReaderFunc
+	familyRefRemover       familyRefRemoverFunc
+	familyPoolRemover      func(context.Context, *Account, *Account) (*control.FamilyInfo, *control.FamilyInfo, error)
+	familyRemovalMu        sync.Mutex
+	familyRemovalUnknown   map[string]bool
+	primaryMailRunner      func(context.Context, *Account, primaryMailInput) primaryMailState
+	familyCredentialLoader func(string, string) (string, error)
 }
 type Status struct {
 	PID                  int       `json:"pid"`
@@ -1387,22 +1388,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if action.Action == "family-add-readiness" {
-				if selected == nil {
-					json.NewEncoder(w).Encode(control.Result{Stage: "family-worker-unready", Message: "目标账号后台未就绪"})
-					return
-				}
-				checkCtx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-				var worker control.View
-				err := s.callFor(checkCtx, selected.Dir, "/view", nil, &worker)
-				cancel()
-				var workerStatus Status
-				statusErr := json.Unmarshal(worker.Status, &workerStatus)
-				if err != nil || statusErr != nil || !workerStatus.Running || !workerStatus.Authenticated || workerStatus.VerificationRequired ||
-					!slices.Contains(worker.Capabilities, control.FamilyAddReadyCapability) {
-					json.NewEncoder(w).Encode(control.Result{Stage: "family-worker-unready", Message: "目标账号后台未就绪或需要重新连接"})
-					return
-				}
-				json.NewEncoder(w).Encode(control.Result{OK: true, Stage: "family-add-ready", Message: "目标账号后台已就绪"})
+				json.NewEncoder(w).Encode(s.familyAddReadiness(r.Context(), selected))
 				return
 			}
 			if action.Action == "family-pool" {
@@ -1430,12 +1416,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				json.NewEncoder(w).Encode(result)
 				return
 			}
-			if action.Action == "family-add-self" && action.HasOneShotFamilyCredential() {
-				if selected == nil || !strings.EqualFold(strings.TrimSpace(action.TargetAppleID), strings.TrimSpace(selected.AppleID)) {
-					json.NewEncoder(w).Encode(control.Result{Stage: "family-binding", Message: "目标账号凭据绑定无效"})
-					return
-				}
-				ready := s.familyAddCredentialReadiness(r.Context(), selected)
+			if action.Action == "family-add-self" {
+				ready := s.prepareFamilyAddAction(r.Context(), selected, &action)
 				if !ready.OK {
 					json.NewEncoder(w).Encode(ready)
 					return
