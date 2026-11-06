@@ -219,6 +219,15 @@ func TestControlRejectsUnknownOrOversizedInput(t *testing.T) {
 }
 
 func TestControlAcceptsHMEWebTermsAction(t *testing.T) {
+	testControlActionDelivery(t, "hme-accept-terms")
+}
+
+func TestControlAcceptsLoginContinuationAction(t *testing.T) {
+	testControlActionDelivery(t, "continue-login")
+}
+
+func testControlActionDelivery(t *testing.T, action string) {
+	t.Helper()
 	dir := t.TempDir()
 	server, err := New(dir)
 	if err != nil {
@@ -231,9 +240,10 @@ func TestControlAcceptsHMEWebTermsAction(t *testing.T) {
 	}
 	go func() {
 		command := <-server.Commands
-		command.Reply <- Result{OK: command.Action.Action == "hme-accept-terms"}
+		command.Reply <- Result{OK: command.Action.Action == action}
 	}()
-	request, _ := http.NewRequest("POST", server.Record.URL+"/action", bytes.NewBufferString(`{"action":"hme-accept-terms"}`))
+	body, _ := json.Marshal(Action{Action: action})
+	request, _ := http.NewRequest("POST", server.Record.URL+"/action", bytes.NewReader(body))
 	request.Header.Set("X-Control-Token", server.Record.Token)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -242,6 +252,6 @@ func TestControlAcceptsHMEWebTermsAction(t *testing.T) {
 	defer response.Body.Close()
 	var result Result
 	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&result) != nil || !result.OK {
-		t.Fatal("hme-accept-terms action was not delivered")
+		t.Fatalf("%s action was not delivered", action)
 	}
 }

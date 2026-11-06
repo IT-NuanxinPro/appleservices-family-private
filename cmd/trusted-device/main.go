@@ -419,7 +419,7 @@ func run() (runErr error) {
 			return err
 		}
 	}
-	client, err := login.Client()
+	client, err := completeICloudLogin(ctx, login, store, panelCommands, &status, *dir, panel != nil && *guiAuth && !*resumeSession)
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -584,6 +584,9 @@ func run() (runErr error) {
 		return hmeClient.List(actionCtx)
 	}
 	performAction := func(actionCtx context.Context, action, visibleRequestID, commandCode, commandLabel, commandNote, commandTargetAppleID, commandTargetPassword string) control.Result {
+		if action == "continue-login" {
+			return control.Result{OK: true, Stage: "online", Message: "当前账号已完成登录"}
+		}
 		if action == "hme-accept-terms" {
 			queryCtx, done := context.WithTimeout(actionCtx, 115*time.Second)
 			defer done()

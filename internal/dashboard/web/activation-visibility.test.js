@@ -211,3 +211,65 @@ test('rendering activation state does not fetch, start an action, or accept term
 
   assert.deepEqual(harness.effects, { fetch: 0, action: 0, accept: 0 })
 })
+
+test('verified login waits for activation without asking for another SMS', () => {
+  const harness = createHarness({ activationInfo: requiredActivation })
+  harness.render({ activation_ready: true, icloud_activated: false, status: { running: true, state: 'awaiting_icloud_activation' } })
+  assert.equal(harness.element('activationState').textContent, '等待同意条款')
+  assert.match(harness.element('activationSummary').textContent, /无需再次输入密码或短信验证码/)
+  assert.equal(harness.element('continueLoginButton').hidden, false)
+  assert.equal(harness.element('continueLoginButton').disabled, false)
+  assert.equal(harness.element('activationAcceptButton').hidden, false)
+  assert.deepEqual(harness.effects, { fetch: 0, action: 0, accept: 0 })
+})
+
+test('saved activation remains pending until the worker validates it online', () => {
+  const harness = createHarness()
+  const view = { icloud_activated: true, status: { running: true, state: 'awaiting_icloud_activation' } }
+  harness.render(view)
+  assert.equal(harness.element('activationState').textContent, '正在接续登录')
+  assert.match(harness.element('activationSummary').textContent, /正在验证/)
+  view.status.icloud_issue = 'checkpoint_unavailable'
+  harness.render(view)
+  assert.match(harness.element('activationSummary').textContent, /暂未通过在线检查/)
+  harness.context.busy = true
+  harness.render(view)
+  assert.equal(harness.element('continueLoginButton').disabled, true)
+  harness.render({ icloud_activated: true, status: { running: true, authenticated: true, state: 'online' } })
+  assert.equal(harness.element('continueLoginButton').hidden, true)
+})
+
+test('waiting worker is shown as pending activation, never stopped or fully authenticated', () => {
+  const elements = new Map()
+  const context = {
+    $ (id) {
+      if (!elements.has(id)) elements.set(id, { textContent: '', replaceChildren (...nodes) { this.nodes = nodes } })
+      return elements.get(id)
+    },
+    document: { createElement: name => ({ name }), createTextNode: text => ({ text }) },
+  }
+  vm.createContext(context)
+  vm.runInContext(extractFunction(appSource, 'renderLoginContinuation'), context)
+  context.renderLoginContinuation({ running: true, state: 'awaiting_icloud_activation' })
+  assert.match(elements.get('sessionTitle').textContent, /账号验证已通过/)
+  assert.match(elements.get('sessionDescription').textContent, /后台仍在运行/)
+  assert.equal(elements.get('authState').textContent, '账号已验证')
+  assert.equal(elements.get('statusBadge').nodes[1].text, '待激活')
+})
+
+test('adding an account defaults to SMS and reconnecting retains device verification', () => {
+  const elements = new Map()
+  const context = {
+    selectedAccount: 'fixture-account', current: { login_account: 'fixture@example.test' },
+    $ (id) {
+      if (!elements.has(id)) elements.set(id, { value: '', focus () {}, showModal () {}, querySelector () { return {} } })
+      return elements.get(id)
+    },
+  }
+  vm.createContext(context)
+  vm.runInContext(extractFunction(appSource, 'openLogin'), context)
+  context.openLogin('add')
+  assert.equal(elements.get('twofactor').value, 'sms')
+  context.openLogin('reconnect')
+  assert.equal(elements.get('twofactor').value, 'trusted-device')
+})

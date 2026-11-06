@@ -81,6 +81,7 @@ type Status struct {
 	PushReconnectCount   int       `json:"push_reconnect_count"`
 	PushIssue            string    `json:"push_issue,omitempty"`
 	FailureStage         string    `json:"failure_stage,omitempty"`
+	ICloudIssue          string    `json:"icloud_issue,omitempty"`
 }
 type view struct {
 	Status                    Status                  `json:"status"`

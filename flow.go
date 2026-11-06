@@ -1,6 +1,7 @@
 package appleservices
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -22,6 +23,11 @@ type loginBackend interface {
 
 type backendFactory func(gsa.AnisetteProvider, *gsa.Session) loginBackend
 type delegateFetcher func(map[string]string, string, string, string) (icloud.DelegateTokens, error)
+
+// ErrICloudSessionPending means account verification succeeded but the separate
+// iCloud exchange did not. A dashboard can keep this Login alive for activation
+// or retry the exchange without another password/verification challenge.
+var ErrICloudSessionPending = errors.New("appleservices: iCloud session pending")
 
 func defaultBackend(p gsa.AnisetteProvider, sess *gsa.Session) loginBackend {
 	if sess != nil {
@@ -374,7 +380,7 @@ func (l *Login) Client() (*Client, error) {
 		// Account-side registration can succeed without iCloud service data.
 		// Never turn that partial result into an authenticated iCloud client,
 		// including when an older launcher enables the retired degraded flag.
-		return nil, fmt.Errorf("appleservices: iCloud login: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrICloudSessionPending, err)
 	}
 	if dt.DSID == "" || dt.MMEAuthToken == "" {
 		return nil, errors.New("appleservices: iCloud login returned no account ID or auth token")
@@ -392,6 +398,47 @@ func (l *Login) Client() (*Client, error) {
 	l.client = &Client{DSID: dt.DSID, ADSID: l.adsid, MMEAuthToken: dt.MMEAuthToken,
 		StorageBuyToken: spdToken(l.result.SessionPayload, "com.apple.gs.icloud.storage.buy"),
 		CloudKitToken:   dt.CloudKitToken, serviceData: dt.ServiceData}
+	return l.client, nil
+}
+
+// ContinueWithICloudSession adopts activation completed by the dashboard into
+// this already verified Login. It retains the original backend and credentials
+// and validates live quota access before exposing an authenticated client.
+func (l *Login) ContinueWithICloudSession(ctx context.Context, accepted RestoredICloudSession) (*Client, error) {
+	return l.continueWithICloudSession(ctx, accepted, func(c *Client) error {
+		headers, err := l.anisette.Headers()
+		if err != nil {
+			return errors.New("appleservices: iCloud activation headers unavailable")
+		}
+		_, err = icloud.FetchStorageInfo(ctx, c.serviceData, l.creds.AppleID, c.DSID, c.ADSID, c.MMEAuthToken, headers)
+		return err
+	})
+}
+
+func (l *Login) continueWithICloudSession(ctx context.Context, accepted RestoredICloudSession, verify func(*Client) error) (*Client, error) {
+	if l.needsTwoFactor || !l.gsaCheckpointed || l.result == nil || l.adsid == "" {
+		return nil, errors.New("appleservices: complete account verification before iCloud activation")
+	}
+	saved, err := l.store.LoadSession()
+	if err != nil || saved == nil || !strings.EqualFold(saved.AppleID, l.creds.AppleID) || saved.DSID != l.adsid || accepted.ADSID != l.adsid {
+		return nil, errors.New("appleservices: activated session account binding is invalid")
+	}
+	if accepted.DSID == "" || accepted.MMEAuthToken == "" || accepted.ServiceData == nil {
+		return nil, errors.New("appleservices: activated iCloud session is incomplete")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	candidate := &Client{DSID: accepted.DSID, ADSID: accepted.ADSID, MMEAuthToken: accepted.MMEAuthToken,
+		StorageBuyToken: spdToken(l.result.SessionPayload, "com.apple.gs.icloud.storage.buy"),
+		CloudKitToken:   accepted.CloudKitToken, serviceData: accepted.ServiceData}
+	if err := verify(candidate); err != nil {
+		return nil, fmt.Errorf("appleservices: activated iCloud session verification: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	l.client = candidate
 	return l.client, nil
 }
 

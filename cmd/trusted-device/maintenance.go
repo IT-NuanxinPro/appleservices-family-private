@@ -140,6 +140,7 @@ type runtimeStatus struct {
 	LastUnsupportedNoticeAt time.Time `json:"last_unsupported_notice_at,omitempty"`
 	PushIssue               string    `json:"push_issue,omitempty"`
 	FailureStage            string    `json:"failure_stage,omitempty"`
+	ICloudIssue             string    `json:"icloud_issue,omitempty"`
 }
 
 func (s *runtimeStatus) setDevices(devices []appleservices.AccountDevice, name string) {

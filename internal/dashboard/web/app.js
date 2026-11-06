@@ -48,6 +48,7 @@ function renderFamily(info,{checkedAt='',stale=false,animate=true}={}){
 function resetHME(){hmeInfo=null;hmeAccount='';hmeCandidate='';hmeVisible=100;hmeEditing='';setHMEFeedback('');$('hmeCandidatePanel').hidden=true;$('hmeReachablePanel').hidden=true;$('hmeReachableCodeForm').hidden=true;$('hmeReachableEmail').value='';$('hmeReachableCode').value='';$('hmeSearch').value='';renderHME(null);}
 function renderActivation(view){
   const activated=!!view?.icloud_activated,account=!!(view?.selected||selectedAccount),ready=account&&!!view?.activation_ready&&!activated;
+  const pending=!!view?.status?.running&&view.status.state==='awaiting_icloud_activation';
   if(!ready||(activationAccount&&activationAccount!==selectedAccount)){activationInfo=null;activationAccount='';}
   const terms=ready&&!!activationInfo?.required;
   $('activationCard').hidden=false;
@@ -63,6 +64,20 @@ function renderActivation(view){
   $('activationCheckButton').disabled=busy||!ready;
   $('activationAcceptButton').hidden=!terms;
   $('activationAcceptButton').disabled=busy||!terms;
+  $('continueLoginButton').hidden=!pending;
+  $('continueLoginButton').disabled=busy||!pending;
+  if(pending){
+    $('activationState').textContent=activated?'正在接续登录':terms?'等待同意条款':'账号验证已通过';
+    $('activationSummary').textContent=view.status.icloud_issue?'已保存的 iCloud 会话暂未通过在线检查。账号验证仍保留，可稍后重试连接，无需再次输入短信验证码。':activated?'激活记录已保存，后台正在验证并继续完成本次登录。':terms?'请查看并确认 Apple 当前条款。激活完成后，后台会继续本次登录，无需再次输入密码或短信验证码。':'短信或设备验证码已验证，后台仍在运行。请检查激活状态并完成 Apple 要求的步骤，完成后会自动继续登录；连接暂时失败时也可以重试。';
+  }
+}
+function renderLoginContinuation(status){
+  if(!status?.running||status.authenticated||status.state!=='awaiting_icloud_activation')return;
+  $('sessionTitle').textContent='账号验证已通过 · 等待 iCloud';
+  $('sessionDescription').textContent='后台仍在运行，已保留本次登录。请在下方继续激活 iCloud，完成后会自动上线，无需再次输入密码或短信验证码。';
+  $('authState').textContent='账号已验证';
+  $('statusBadge').className='status-badge waiting';
+  $('statusBadge').replaceChildren(document.createElement('i'),document.createTextNode('待激活'));
 }
 function hmeDate(value){if(!value)return '时间未知';const stamp=Number(value);const date=new Date(stamp<100000000000?stamp*1000:stamp);return Number.isNaN(date.getTime())?'时间未知':new Intl.DateTimeFormat('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit'}).format(date);}
 function showHMECandidate(candidate){hmeCandidate=candidate||'';$('hmeCandidateAddress').textContent=hmeCandidate||'—';$('hmeCandidatePanel').hidden=!hmeCandidate;if(hmeCandidate){$('hmeCreateLabel').value='';$('hmeCreateNote').value='';$('hmeCreateLabel').focus();}}
@@ -83,7 +98,7 @@ function openLogin(mode){
   loginMode=mode;loginAccount=selectedAccount;
   $('appleID').value=mode==='reconnect'?(current?.login_account||''):'';
   $('appleID').readOnly=mode==='reconnect'&&!!$('appleID').value;
-  $('password').value='';$('twofactor').value='trusted-device';
+  $('password').value='';$('twofactor').value=mode==='add'?'sms':'trusted-device';
   $('loginDialog').querySelector('h2').textContent=mode==='add'?'添加 Apple 账户':'重新连接当前账号';
   $('loginDialog').showModal();
   ($('appleID').readOnly?$('password'):$('appleID')).focus();
@@ -116,6 +131,7 @@ const capabilities=[];if(status.push_issue==='token_changed')capabilities.push('
 $('statusBadge').className='status-badge'+(online?' online':waiting||starting?' waiting':'');$('statusBadge').replaceChildren();const dot=document.createElement('i');$('statusBadge').append(dot,document.createTextNode(online?'在线':waiting?'待验证':starting?'连接中':'未连接'));
 $('authState').textContent=online?'已认证':activated?'iCloud 已激活':waiting?'等待验证':starting?'认证中':'未登录';$('pushState').textContent=status.push_connected?'已连接':status.push_issue==='reconnecting'?'重连中':'未连接';$('renewState').textContent=online?'每 10 分钟':activated?'按需验证':'等待登录';
 for(const [id,active] of [['authDot',online],['pushDot',status.push_connected],['renewDot',online]])$(id).classList.toggle('active',!!active);
+renderLoginContinuation(status);
 $('accountTag').hidden=!view.account;$('accountTag').textContent=view.account;$('sidebarAccount').replaceChildren(document.createTextNode(view.account||'本机账户'));const sub=document.createElement('small');sub.textContent='Windows 工作空间';$('sidebarAccount').append(sub);
 // The account name and avatar are rendered from the account list (renderAccounts).
 $('startButton').hidden=running;$('startButton').textContent=status.state==='failed'?'重新连接':'连接账户';$('startButton').disabled=busy||starting;$('renewButton').hidden=!online;$('renewButton').disabled=busy||!view.control_ready;$('stopButton').hidden=!status.running;$('stopButton').disabled=busy;
@@ -267,6 +283,7 @@ async function action(name,extra={},options={}){
 $('reloadView').addEventListener('click',poll);$('codeButton').addEventListener('click',()=>action('code'));$('devicesButton').addEventListener('click',()=>action('devices'));$('renewButton').addEventListener('click',()=>action('validate-account'));
 $('storageButton').addEventListener('click',()=>action('storage-info'));
 $('activationCheckButton').addEventListener('click',()=>action('activation-plan'));
+$('continueLoginButton').addEventListener('click',()=>action('continue-login'));
 $('activationAcceptButton').addEventListener('click',()=>{if(!activationInfo?.required)return;const tuple=activationInfo.region+':'+activationInfo.icloud_version+':'+(activationInfo.media_version||'');if(!confirm('确认接受 '+activationInfo.region+' 区 iCloud '+activationInfo.icloud_version+' 与媒体服务 '+(activationInfo.media_version||'无更新')+' 条款，并继续生成本账号 NAC 完成激活？'))return;action('activation-accept',{code:tuple});});
 $('planButton').addEventListener('click',()=>action('storage-plan'));
 $('familyRefreshButton').addEventListener('click',()=>action('family-info'));
